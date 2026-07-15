@@ -1,0 +1,58 @@
+# .github/workflows/ci.yml
+name: CI - Train and Save the model
+
+
+# Trigger: run on push OR pull request to main branch
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+
+jobs:
+  matrix-pip:
+    name: Train and Save the model
+    runs-on: ubuntu-latest   # GitHub's free Linux virtual machine
+
+
+    # Run this job TWICE — once per Python version
+    strategy:
+      matrix:
+        python: [3.11, 3.12]
+
+
+    steps:
+      # Step 1: Download repo code onto the VM
+      - name: Checkout
+        uses: actions/checkout@v4
+   # Step 2: Install the correct Python version
+      - name: Setup Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: ${{ matrix.python }}
+
+
+      # Step 3: Upgrade pip (best practice)
+      - name: Upgrade pip
+        run: python -m pip install --upgrade pip setuptools wheel
+
+
+      # Step 4: Install project dependencies
+      - name: Install project dependencies
+        run: python -m pip install -r requirements.txt
+
+
+      # Step 5: Train the model
+      - name: Train the model
+        run: |
+          python train.py
+          ls -la artifacts
+
+
+      # Step 6: Upload model.pkl and metrics.json as downloadable artifacts
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ml-artifacts-${{ matrix.python }}-${{ github.run_id }}
+          path: artifacts

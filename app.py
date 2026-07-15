@@ -1,142 +1,118 @@
-﻿from flask import Flask, request, jsonify, render_template_string
-from flask_cors import CORS
+from flask import Flask, request, jsonify
 import joblib
-import numpy as np
 import os
-import threading
-import webbrowser
-
-MODEL_PATH = os.path.join("artifacts", "model.pkl")
+from pathlib import Path
 
 app = Flask(__name__)
-# Enable CORS (allow cross-origin requests)
-CORS(app)
-model = None
-target_names = None
+MODEL_PATH = Path("artifacts/model.pkl")
 
-HTML_PAGE = """
-<!doctype html>
-<html>
-  <head>
-    <meta charset="utf-8">
-    <title>Iris Predictor</title>
-  </head>
-  <body>
-    <h1>Iris Predictor</h1>
-    <p>Enter 4 feature values (sepal length, sepal width, petal length, petal width) as comma-separated numbers:</p>
-    <input id="features" size="40" value="5.1,3.5,1.4,0.2" />
-    <button onclick="predict()">Predict</button>
-    <pre id="result"></pre>
+if not MODEL_PATH.exists():
+    # convenience: train if model missing
+    import train as _train
+    _train.main()
 
-    <script>
-      async function predict() {
-        const raw = document.getElementById('features').value;
-        const arr = raw.split(',').map(x => parseFloat(x.trim()));
-        const resEl = document.getElementById('result');
-        resEl.textContent = 'Calling server...';
-        try {
-          const resp = await fetch('/predict', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ input: arr })
-          });
-          const j = await resp.json();
-          resEl.textContent = JSON.stringify(j, null, 2);
-        } catch (err) {
-          resEl.textContent = 'Error: ' + err;
-        }
-      }
-    </script>
-  </body>
-</html>
-"""
+model = joblib.load(MODEL_PATH)
 
+# ── Browser UI ────────────────────────────────────────────────────────
+@app.route("/", methods=["GET"])
+def home():
+    return """
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <title>Iris Flower Predictor</title>
+        <style>
+            body { font-family: Arial, sans-serif; max-width: 500px; margin: 60px auto; padding: 20px; }
+            h2   { color: #333; }
+            label { display: block; margin-top: 14px; font-weight: bold; }
+            input { width: 100%; padding: 8px; margin-top: 4px; box-sizing: border-box; font-size: 15px; }
+            button { margin-top: 20px; padding: 10px 30px; background: #4CAF50; color: white;
+                     border: none; font-size: 16px; cursor: pointer; border-radius: 4px; }
+            button:hover { background: #45a049; }
+            #result { margin-top: 24px; padding: 16px; border-radius: 6px; font-size: 18px; display: none; }
+            .success { background: #e8f5e9; color: #2e7d32; border: 1px solid #a5d6a7; }
+            .error   { background: #ffebee; color: #c62828; border: 1px solid #ef9a9a; }
+        </style>
+    </head>
+    <body>
+        <h2>🌸 Iris Flower Predictor</h2>
+        <p>Enter the 4 measurements and click Predict.</p>
 
-def load_model():
-    global model, target_names
-    if model is not None:
-        return model, target_names
-    if not os.path.exists(MODEL_PATH):
-        raise FileNotFoundError(f"Model not found at {MODEL_PATH}. Run train.py to create it.")
-    model = joblib.load(MODEL_PATH)
-    # try to get human-readable class names
-    try:
-        from sklearn.datasets import load_iris
-        target_names = load_iris().target_names.tolist()
-    except Exception:
-        # fallback to numeric class labels as strings
-        target_names = [str(c) for c in getattr(model, 'classes_', range(0))]
-    return model, target_names
+        <label>Sepal Length (cm)</label>
+        <input type="number" id="sl" placeholder="e.g. 5.1" step="0.1">
 
+        <label>Sepal Width (cm)</label>
+        <input type="number" id="sw" placeholder="e.g. 3.5" step="0.1">
 
-@app.route('/')
-def index():
-    return render_template_string(HTML_PAGE)
+        <label>Petal Length (cm)</label>
+        <input type="number" id="pl" placeholder="e.g. 1.4" step="0.1">
 
+        <label>Petal Width (cm)</label>
+        <input type="number" id="pw" placeholder="e.g. 0.2" step="0.1">
 
-@app.route('/predict', methods=['POST'])
-def predict():
-    data = request.get_json(silent=True)
-    if not data or 'input' not in data:
-        return jsonify({'error': 'Request must be JSON with an "input" field containing a list of features.'}), 400
-    features = data['input']
+        <button onclick="predict()">Predict</button>
 
-    # Strict validation: require exactly 4 numeric features
-    if not isinstance(features, (list, tuple)):
-        return jsonify({'error': 'Input must be a list of numeric features.'}), 400
-    if len(features) != 4:
-        return jsonify({'error': 'Exactly 4 features required: [sepal_length, sepal_width, petal_length, petal_width]'}), 400
-    try:
-        X = np.array([float(x) for x in features], dtype=float).reshape(1, -1)
-    except Exception as e:
-        return jsonify({'error': f'All features must be numeric: {e}'}), 400
+        <div id="result"></div>
 
-    try:
-        model, names = load_model()
-    except Exception as e:
-        return jsonify({'error': str(e)}), 500
+        <script>
+            const flowerNames = { 0: "Setosa 🌼", 1: "Versicolor 🌸", 2: "Virginica 🌺" };
 
-    try:
-        pred = model.predict(X)
-        proba = None
-        if hasattr(model, 'predict_proba'):
-            proba = model.predict_proba(X).tolist()
-        numeric = int(pred[0]) if hasattr(pred, '__iter__') else int(pred)
-        label = names[numeric] if numeric < len(names) else str(numeric)
-        return jsonify({'prediction': numeric, 'label': label, 'proba': proba})
-    except Exception as e:
-        return jsonify({'error': f'Prediction failed: {e}'}), 500
+            async function predict() {
+                const features = [
+                    parseFloat(document.getElementById("sl").value),
+                    parseFloat(document.getElementById("sw").value),
+                    parseFloat(document.getElementById("pl").value),
+                    parseFloat(document.getElementById("pw").value)
+                ];
 
-@app.route('/health', methods=['GET'])
+                const resultDiv = document.getElementById("result");
+
+                if (features.some(isNaN)) {
+                    resultDiv.className = "error";
+                    resultDiv.innerText = "Please fill in all 4 values.";
+                    resultDiv.style.display = "block";
+                    return;
+                }
+
+                const response = await fetch("/predict", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ features: features })
+                });
+
+                const data = await response.json();
+
+                if (data.prediction !== undefined) {
+                    resultDiv.className = "success";
+                    resultDiv.innerHTML = "Prediction: <strong>" + flowerNames[data.prediction] + "</strong>";
+                } else {
+                    resultDiv.className = "error";
+                    resultDiv.innerText = "Error: " + data.error;
+                }
+                resultDiv.style.display = "block";
+            }
+        </script>
+    </body>
+    </html>
+    """
+
+# ── Health check ──────────────────────────────────────────────────────
+@app.route("/health", methods=["GET"])
 def health():
-    """Health endpoint returning basic status and whether model loads."""
-    ok = True
-    model_loaded = False
-    msg = ''
+    return jsonify({"status": "ok"})
+
+# ── Prediction API ────────────────────────────────────────────────────
+@app.route("/predict", methods=["POST"])
+def predict():
+    data = request.get_json()
+    if not data or "features" not in data:
+        return jsonify({"error": "send JSON with key 'features'"}), 400
+    features = data["features"]
     try:
-        load_model()
-        model_loaded = True
+        pred = model.predict([features])
+        return jsonify({"prediction": int(pred[0])})
     except Exception as e:
-        ok = False
-        msg = str(e)
-    return jsonify({'ok': ok, 'model_loaded': model_loaded, 'message': msg})
+        return jsonify({"error": str(e)}), 500
 
-
-if __name__ == '__main__':
-    # Host and port can be configured via environment variables:
-    # APP_HOST (default: 0.0.0.0) and PORT (default: 5000)
-    host = os.getenv('APP_HOST', '0.0.0.0')
-    port = int(os.getenv('PORT', '5000'))
-
-    # Optionally auto-open the browser. Set AUTO_OPEN to '0' or 'false' to disable.
-    auto_open = os.getenv('AUTO_OPEN', '1').lower() not in ('0', 'false', 'no')
-    url = f'http://127.0.0.1:{port}/'
-    if auto_open:
-        try:
-            # Open the local loopback URL so it works even when binding to 0.0.0.0
-            threading.Timer(1.5, lambda: webbrowser.open(url)).start()
-        except Exception:
-            pass
-
-    # Run the Flask app on the configured host and port
-    app.run(host=host, port=port)
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=5001)
